@@ -1,11 +1,16 @@
-import { useState } from 'react';
-import { INFRACTIONS, Infraction } from '@/data/infractions';
+import { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
+
+interface Infraction {
+  id: string;
+  nom: string;
+  tarif_usd: number;
+}
 
 interface ContraventionData {
   agentId: string;
   plaque: string;
-  usager: string;
+  numeroPermis: string; // Updated
   infractionId: string;
   montant: number;
 }
@@ -15,46 +20,17 @@ interface Props {
 }
 
 export default function ContraventionForm({ onSubmit }: Props) {
+  const [infractions, setInfractions] = useState<Infraction[]>([]);
   const [selectedInfraction, setSelectedInfraction] = useState<Infraction | null>(null);
-  
+
+  // State definitions moved to top
   const [formData, setFormData] = useState<ContraventionData>({
     agentId: 'AGT-',
     plaque: '',
-    usager: 'USR-',
+    numeroPermis: '', // Updated
     infractionId: '',
     montant: 0,
   });
-
-  const handleInfractionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const infractionId = e.target.value;
-    const infraction = INFRACTIONS.find(i => i.id.toString() === infractionId);
-    
-    if (infraction) {
-      setSelectedInfraction(infraction);
-      setFormData({
-        ...formData,
-        infractionId: infraction.id.toString(),
-        montant: infraction.tarif_usd
-      });
-    }
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
-    
-    // Gestion spéciale pour les champs avec préfixe
-    if (name === 'agentId') {
-      // Ne garder que les chiffres après le préfixe
-      const numbersOnly = value.replace(/\D/g, '');
-      setFormData({ ...formData, [name]: `AGT-${numbersOnly}` });
-    } else if (name === 'usager') {
-      // Ne garder que les chiffres après le préfixe
-      const numbersOnly = value.replace(/\D/g, '');
-      setFormData({ ...formData, [name]: `USR-${numbersOnly}` });
-    } else {
-      setFormData({ ...formData, [name]: value });
-    }
-  };
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -62,47 +38,124 @@ export default function ContraventionForm({ onSubmit }: Props) {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Nouveau state pour la recherche plaque
+  const [isCheckingPlaque, setIsCheckingPlaque] = useState(false);
+  const [driverInfo, setDriverInfo] = useState<any>(null);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch('/api/infractions');
+        if (res.ok) setInfractions(await res.json());
+      } catch (e) { console.error(e); }
+    }
+    load();
+  }, []);
+
+  const handleInfractionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const infractionId = e.target.value;
+    const infraction = infractions.find(i => i.id === infractionId);
+
+    if (infraction) {
+      setSelectedInfraction(infraction);
+      setFormData({
+        ...formData,
+        infractionId: infraction.id,
+        montant: infraction.tarif_usd
+      });
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+
+    // Gestion spéciale pour les champs avec préfixe
+    if (name === 'agentId') {
+      // Ne garder que les chiffres après le préfixe
+      const numbersOnly = value.replace(/\D/g, '');
+      setFormData({ ...formData, [name]: `AGT-${numbersOnly}` });
+    } else if (name === 'numeroPermis') {
+      // Nettoyage ou formatage si nécessaire (pour l'instant brut)
+      setFormData({ ...formData, [name]: value });
+    } else {
+      setFormData({ ...formData, [name]: value });
+    }
+  };
+
+  const checkDriver = async (field: 'plaque' | 'permis') => {
+    const value = field === 'plaque' ? formData.plaque : formData.numeroPermis;
+    if (!value || value.length < 3) return;
+
+    setIsCheckingPlaque(true);
+    setDriverInfo(null);
+
+    try {
+      const param = field === 'plaque' ? `plaque=${value}` : `permis=${value}`;
+      const res = await fetch(`/api/drivers/lookup?${param}`);
+      const data = await res.json();
+
+      if (data.found && data.driver) {
+        setDriverInfo(data.driver);
+
+        // Auto-complete fields
+        setFormData(prev => ({
+          ...prev,
+          plaque: data.driver.plate || prev.plaque,
+          numeroPermis: data.driver.licenseNumber || prev.numeroPermis
+        }));
+
+        toast.success(`Chauffeur identifié : ${data.driver.fullName}`);
+      } else {
+        toast('Aucun véhicule/chauffeur trouvé', { icon: '⚠️' });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsCheckingPlaque(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    
+
     // Validation
     if (!/^AGT-\d+$/.test(formData.agentId)) {
       setError("Veuillez entrer un numéro d'agent valide (ex: AGT-123)");
       return;
     }
-    
-    if (!/^USR-\d+$/.test(formData.usager)) {
-      setError("Veuillez entrer un numéro d'usager valide (ex: USR-456)");
-      return;
-    }
-    
+
+    // Validation Permis (Optionnel ou format spécifique si besoin)
+    // Ici on laisse libre pour l'instant
+
     if (!formData.infractionId) {
       setError("Veuillez sélectionner une infraction");
       return;
     }
-    
+
     setIsSubmitting(true);
-    
+
     try {
       const response = await fetch('/api/contraventions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agentId: formData.agentId.replace('AGT-', ''),
-          usager: formData.usager.replace('USR-', ''),
           plaque: formData.plaque,
+          // note: usager field removed from API payload as per request since we rely on plaque/permis
           infractionId: formData.infractionId,
-          montant: formData.montant
+          infractionName: selectedInfraction?.nom || 'Infraction inconnue', // Pour description claire
+          montant: formData.montant,
+          permis: formData.numeroPermis // Contient soit Permis soit USR-XXX
         }),
       });
-      
+
       const result = await response.json();
-      
+
       if (!response.ok) {
         throw new Error(result.error || 'Une erreur est survenue lors de la création de la transaction');
       }
-      
+
       // Stocker le hash de la transaction
       if (result.txHash) {
         setTxHash(result.txHash);
@@ -110,7 +163,7 @@ export default function ContraventionForm({ onSubmit }: Props) {
       } else {
         throw new Error('Aucun hash de transaction reçu');
       }
-      
+
     } catch (error) {
       console.error('Erreur:', error);
       const errorMessage = error instanceof Error ? error.message : 'Une erreur inconnue est survenue';
@@ -138,31 +191,34 @@ export default function ContraventionForm({ onSubmit }: Props) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          agentId: formData.agentId, // On garde le préfixe AGT-
-          usagerId: formData.usager, // On garde le préfixe USR-
+          agentId: formData.agentId,
+          permis: formData.numeroPermis,
+          infractionId: formData.infractionId,
+          montant: formData.montant,
+          plaque: formData.plaque,
           txHash,
         }),
       });
 
       const result = await response.json();
-      
+
       if (!response.ok) {
         throw new Error(result.error || 'Erreur lors de l\'enregistrement dans la base de données');
       }
-      
+
       toast.success('Contravention enregistrée avec succès dans la base de données !');
-      
+
       // Réinitialiser le formulaire après un enregistrement réussi
       setFormData({
         agentId: 'AGT-',
         plaque: '',
-        usager: 'USR-',
+        numeroPermis: '',
         infractionId: '',
         montant: 0,
       });
       setSelectedInfraction(null);
       setTxHash(null);
-      
+
     } catch (error) {
       console.error('Erreur lors de l\'enregistrement:', error);
       const errorMessage = error instanceof Error ? error.message : 'Une erreur est survenue lors de l\'enregistrement';
@@ -187,8 +243,8 @@ export default function ContraventionForm({ onSubmit }: Props) {
         </p>
       </div>
 
-      <form 
-        onSubmit={handleSubmit} 
+      <form
+        onSubmit={handleSubmit}
         className="space-y-5 bg-[#0A0A0A] p-6 rounded-2xl border border-[#1f1f1f]"
       >
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -221,33 +277,44 @@ export default function ContraventionForm({ onSubmit }: Props) {
               name="plaque"
               value={formData.plaque}
               onChange={handleChange}
+              onBlur={() => checkDriver('plaque')}
               required
               className="bg-[#0A0A0A] border border-[#1f1f1f] text-white text-sm rounded-lg focus:ring-2 focus:ring-[#F0B90B]/50 focus:border-[#F0B90B] block w-full p-2.5 transition-all duration-200"
               placeholder="AB-123-CD"
             />
+            {isCheckingPlaque && <p className="text-xs text-[#F0B90B] mt-1">Recherche du véhicule...</p>}
+            {driverInfo && (
+              <div className="mt-2 p-3 bg-[#1a1a1a] rounded-lg border border-green-900/50">
+                <p className="text-sm text-green-400 font-medium">✅ Chauffeur identifié</p>
+                <p className="text-xs text-gray-300">Nom : <span className="text-white font-semibold">{driverInfo.fullName}</span></p>
+                {driverInfo.vehicle && (
+                  <p className="text-xs text-gray-300">Véhicule : {driverInfo.vehicle.color} {driverInfo.vehicle.brand} {driverInfo.vehicle.model}</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <div>
-            <label htmlFor="usager" className="block text-sm font-medium text-[#F0B90B] mb-1.5">
-              Identifiant Usager
+            <label htmlFor="numeroPermis" className="block text-sm font-medium text-[#F0B90B] mb-1.5">
+              Numéro de Permis ou ID Usager
             </label>
             <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">USR-</span>
+              {/* Prefix removed */}
               <input
                 type="text"
-                id="usager"
-                name="usager"
-                value={formData.usager}
+                id="numeroPermis"
+                name="numeroPermis"
+                value={formData.numeroPermis || ''}
                 onChange={handleChange}
-                required
-                className="w-full bg-[#0A0A0A] border border-[#1f1f1f] text-white text-sm rounded-lg focus:ring-2 focus:ring-[#F0B90B]/50 focus:border-[#F0B90B] block pl-12 pr-3 py-2.5 transition-all duration-200"
-                placeholder="789012"
+                onBlur={() => checkDriver('permis')}
+                className="w-full bg-[#0A0A0A] border border-[#1f1f1f] text-white text-sm rounded-lg focus:ring-2 focus:ring-[#F0B90B]/50 focus:border-[#F0B90B] block pl-4 pr-3 py-2.5 transition-all duration-200"
+                placeholder="Ex: 123456 ou USR-0001"
               />
             </div>
           </div>
-          
+
 
           <div>
             <label htmlFor="montant" className="block text-sm font-medium text-[#F0B90B] mb-1.5">
@@ -281,9 +348,9 @@ export default function ContraventionForm({ onSubmit }: Props) {
             className="w-full bg-[#0A0A0A] border border-[#1f1f1f] text-white text-sm rounded-lg focus:ring-2 focus:ring-[#F0B90B]/50 focus:border-[#F0B90B] p-2.5 transition-all duration-200"
           >
             <option value="">Sélectionnez une infraction</option>
-            {INFRACTIONS.map((infraction) => (
+            {infractions.map((infraction) => (
               <option key={infraction.id} value={infraction.id}>
-                #{infraction.id} : {infraction.nom} - {infraction.tarif_usd} USD
+                {infraction.nom} - {infraction.tarif_usd} USD
               </option>
             ))}
           </select>
@@ -305,22 +372,21 @@ export default function ContraventionForm({ onSubmit }: Props) {
             {error}
           </div>
         )}
-        
+
         {saveError && (
           <div className="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg">
             {saveError}
           </div>
         )}
-        
+
         <div className="pt-6 space-y-4">
           <button
             type="submit"
             disabled={isSubmitting}
-            className={`w-full ${
-              isSubmitting 
-                ? 'bg-gray-400 cursor-not-allowed' 
-                : 'bg-[#F0B90B] hover:bg-[#F0B90B]/90'
-            } text-black font-medium rounded-lg text-sm px-5 py-3 text-center transition-all duration-200 flex items-center justify-center gap-2`}
+            className={`w-full ${isSubmitting
+              ? 'bg-gray-400 cursor-not-allowed'
+              : 'bg-[#F0B90B] hover:bg-[#F0B90B]/90'
+              } text-black font-medium rounded-lg text-sm px-5 py-3 text-center transition-all duration-200 flex items-center justify-center gap-2`}
           >
             {isSubmitting ? (
               <>
@@ -332,16 +398,16 @@ export default function ContraventionForm({ onSubmit }: Props) {
               </>
             ) : (
               <>
-                <svg 
-                  xmlns="http://www.w3.org/2000/svg" 
-                  className="h-5 w-5" 
-                  viewBox="0 0 20 20" 
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  viewBox="0 0 20 20"
                   fill="currentColor"
                 >
-                  <path 
-                    fillRule="evenodd" 
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" 
-                    clipRule="evenodd" 
+                  <path
+                    fillRule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z"
+                    clipRule="evenodd"
                   />
                 </svg>
                 Créer la contravention
@@ -366,23 +432,23 @@ export default function ContraventionForm({ onSubmit }: Props) {
                 >
                   {isSaving ? (
                     <>
-                      <svg 
-                        className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" 
-                        xmlns="http://www.w3.org/2000/svg" 
-                        fill="none" 
+                      <svg
+                        className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
                         viewBox="0 0 24 24"
                       >
-                        <circle 
-                          className="opacity-25" 
-                          cx="12" 
-                          cy="12" 
-                          r="10" 
-                          stroke="currentColor" 
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
                           strokeWidth="4"
                         />
-                        <path 
-                          className="opacity-75" 
-                          fill="currentColor" 
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
                           d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                         />
                       </svg>
@@ -390,18 +456,18 @@ export default function ContraventionForm({ onSubmit }: Props) {
                     </>
                   ) : (
                     <>
-                      <svg 
-                        xmlns="http://www.w3.org/2000/svg" 
-                        className="h-4 w-4" 
-                        fill="none" 
-                        viewBox="0 0 24 24" 
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-4 w-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
                         stroke="currentColor"
                       >
-                        <path 
-                          strokeLinecap="round" 
-                          strokeLinejoin="round" 
-                          strokeWidth={2} 
-                          d="M5 13l4 4L19 7" 
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M5 13l4 4L19 7"
                         />
                       </svg>
                       Enregistrer dans la base de données

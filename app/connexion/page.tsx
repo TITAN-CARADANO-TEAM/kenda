@@ -6,8 +6,9 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 const roleRedirect: Record<string, string> = {
-  usager: "/usagers/espace",
-  agent: "/agents/espace",
+  PASSENGER: "/usagers/espace",
+  POLICE_OFFICER: "/agents/espace",
+  ADMIN: "/"
 };
 
 export default function ConnexionPage() {
@@ -36,8 +37,8 @@ export default function ConnexionPage() {
 
       const { email, role } = await response.json();
 
-      if (role !== "usager" && role !== "agent") {
-        throw new Error("Accès réservé aux usagers et agents uniquement.");
+      if (role !== "PASSENGER" && role !== "POLICE_OFFICER" && role !== "ADMIN" && role !== "DRIVER") {
+        throw new Error("Accès non autorisé pour ce rôle.");
       }
 
       const { error: signInError } =

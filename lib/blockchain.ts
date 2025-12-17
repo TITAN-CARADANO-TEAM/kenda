@@ -6,9 +6,11 @@ import {
 
 export interface BlockchainMetadata {
   agent: string;
-  usager: string;
+  usager?: string; // Legacy
+  permisOrUsager?: string; // New: contains USR-XXX or Permis
   plaque: string;
-  infraction: string;
+  infraction: string; // ID
+  infractionName?: string; // New: Clear Text
   montant: number;
   timestamp: string;
 }
@@ -28,7 +30,13 @@ export async function sendToBlockchain(metadata: BlockchainMetadata): Promise<st
       submitter: provider,
       key: {
         type: 'mnemonic',
-        words: ["whale", "ball", "witness", "loop", "manage", "apart", "fog", "love", "summer", "jaguar", "first", "tragic", "daring", "infant", "opera", "game", "describe", "pelican", "once", "omit", "cross", "grunt", "spray", "body"],// A stocker dans le fichier .env, apres les tests
+        // Nettoie la chaine (enlève les ", [, ]) et découpe par espace ou virgule pour gérer le copier-coller foireux
+        words: (process.env.WALLET_MNEMONIC ?? "")
+          .replace(/[\[\]"]/g, " ")
+          .replace(/,/g, " ")
+          .trim()
+          .split(/\s+/)
+          .filter(w => w.length > 0),
       }
     });
 
@@ -42,13 +50,18 @@ export async function sendToBlockchain(metadata: BlockchainMetadata): Promise<st
     // 674 = metadata label (CIP-20)
     const label = 674;
 
-    // Formatage des métadonnées selon le format de metadata2.js
+    // Determine User/Permis label and value
+    const userLabel = metadata.permisOrUsager?.startsWith('USR') ? 'Usager' : 'Permis';
+    const userValue = metadata.permisOrUsager || metadata.usager || 'N/A';
+
+    // Formatage des métadonnées avec description claire
     const txMetadata = {
       msg: [
         `Agent: ${metadata.agent}`,
         `Plaque: ${metadata.plaque}`,
-        `Usager: ${metadata.usager}`,
-        `Description: #${metadata.infraction}`,
+        `${userLabel}: ${userValue}`,
+        `Infraction: ${metadata.infractionName || 'Routiere'}`,
+        `Reference: ${metadata.infraction}`,
         `Montant: ${metadata.montant} USD`,
         `Timestamp: ${metadata.timestamp}`
       ]

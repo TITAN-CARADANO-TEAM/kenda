@@ -108,11 +108,15 @@ export async function POST(request: Request) {
         console.log(`✅ Paiement validé (${paidAmount} ADA). Mise à jour Supabase pour ID: ${contraventionId}...`);
 
         // On utilise supabaseAdmin pour contourner les RLS si nécessaire, mais ici on veut être sûr
+        // 4. Mettre à jour Supabase
+        console.log(`✅ Paiement validé (${paidAmount} ADA). Mise à jour Supabase pour ID: ${contraventionId}...`);
+
         const { error: updateError } = await supabaseAdmin
-            .from('contraventions')
+            .from('fines')
             .update({
-                statut: 'payed',
-                payment_tx_hash: txHash, // Assurez-vous d'avoir créé cette colonne !
+                status: 'PAID',
+                // payment_tx_hash: txHash, // Column might not exist in fines. If it does, great. If not, maybe skip or use other field.
+                // description: ... // Could append.
                 updated_at: new Date().toISOString(),
             })
             .eq('id', contraventionId);

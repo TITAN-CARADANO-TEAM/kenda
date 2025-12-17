@@ -85,9 +85,9 @@ async function uploadDocument(
 async function generateLoginIdentifier() {
   const { data, error } = await supabaseAdmin
     .from("users")
-    .select("login_identifier")
-    .eq("role", "usager")
-    .order("login_identifier", { ascending: false })
+    .select("matricule")
+    .eq("role", "PASSENGER")
+    .order("matricule", { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -95,11 +95,11 @@ async function generateLoginIdentifier() {
     throw error;
   }
 
-  if (!data?.login_identifier) {
+  if (!data?.matricule) {
     return "USR-0001";
   }
 
-  const [, numberPart] = data.login_identifier.split("-");
+  const [, numberPart] = data.matricule.split("-");
   const nextNumber = parseInt(numberPart, 10) + 1;
   return `USR-${nextNumber.toString().padStart(4, "0")}`;
 }
@@ -159,37 +159,74 @@ export async function POST(request: Request) {
       );
     }
 
-    const {
-      data: authData,
-      error: authError,
-    } = await supabaseAdmin.auth.admin.createUser({
-      email: authEmail,
-      email_confirm: true,
-      password,
-      user_metadata: {
-        role: "usager",
-        loginIdentifier,
-      },
-    });
+    // Check for existing user first to handle retries/collisions gracefully
+    const { data: existingUser } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .eq("email", authEmail)
+      .maybeSingle();
 
-    if (authError || !authData?.user) {
-      throw authError || new Error("Création du compte impossible.");
+    let userId = existingUser?.id;
+
+    if (!userId) {
+      // Try to find in Auth if not in DB (edge case: auth exists but public.users insert failed)
+      // Actually, we can just try createUser and catch email_exists, verify via listUsers?
+      // Simpler: duplicate Agent Logic.
+
+      // Actually, listUsers by email to be sure.
+      const { data: { users: authUsers } } = await supabaseAdmin.auth.admin.listUsers();
+      const existingAuth = authUsers.find(u => u.email === authEmail);
+
+      if (existingAuth) {
+        userId = existingAuth.id;
+        console.log(`[AUTH UPDATE] IDs match. Updating password for ${authEmail}. PWD: ${password}`);
+        await supabaseAdmin.auth.admin.updateUserById(userId, { password, email_confirm: true });
+      } else {
+        const {
+          data: authData,
+          error: authError,
+        } = await supabaseAdmin.auth.admin.createUser({
+          email: authEmail,
+          email_confirm: true,
+          password,
+          user_metadata: {
+            role: "PASSENGER",
+            matricule: loginIdentifier,
+            full_name: `${prenom} ${nom} ${postNom || ''}`.trim(),
+            nom,
+            postNom,
+            prenom,
+            adresse,
+            telephone,
+            statutMatrimonial,
+            contactEmail,
+            carteIdentitePath,
+            permisConduirePath
+          },
+        });
+
+        if (authError) throw authError;
+        if (!authData.user) throw new Error("Auth user creation failed");
+        userId = authData.user.id;
+        console.log(`[AUTH CREATE] Created ${authEmail}. PWD: ${password}`);
+        userId = authData.user.id;
+      }
+    } else {
+      // User exists in DB, update password
+      // We need finding Auth User ID from DB User ID (which are same)
+      console.log(`[DB EXIST] Updating password for user ${userId}. PWD: ${password}`);
+      await supabaseAdmin.auth.admin.updateUserById(userId, { password, email_confirm: true });
     }
 
-    const { error: insertError } = await supabaseAdmin.from("users").insert({
-      id: authData.user.id,
-      role: "usager",
-      login_identifier: loginIdentifier,
-      nom,
-      post_nom: postNom,
-      prenom,
-      statut_matrimonial: statutMatrimonial,
-      adresse,
-      telephone,
-      email: contactEmail,
-      carte_identite_url: carteIdentitePath,
-      permis_conduire_url: permisConduirePath,
-    });
+    const { error: insertError } = await supabaseAdmin.from("users").upsert({
+      id: userId,
+      role: "PASSENGER",
+      matricule: loginIdentifier,
+      full_name: `${prenom} ${nom} ${postNom || ''}`.trim(),
+      phone: telephone,
+      email: contactEmail, // This maps to 'email' column in UserRow if it exists separately from Auth email. Usually yes.
+      is_verified: true,
+    }, { onConflict: 'id' });
 
     if (insertError) {
       throw insertError;

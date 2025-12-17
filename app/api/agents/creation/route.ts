@@ -72,9 +72,9 @@ async function uploadDocument(
 async function generateLoginIdentifier() {
   const { data, error } = await supabaseAdmin
     .from("users")
-    .select("login_identifier")
-    .eq("role", "agent")
-    .order("login_identifier", { ascending: false })
+    .select("matricule")
+    .eq("role", "POLICE_OFFICER")
+    .order("matricule", { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -82,11 +82,11 @@ async function generateLoginIdentifier() {
     throw error;
   }
 
-  if (!data?.login_identifier) {
+  if (!data?.matricule) {
     return "AGT-0001";
   }
 
-  const [, numberPart] = data.login_identifier.split("-");
+  const [, numberPart] = data.matricule.split("-");
   const nextNumber = parseInt(numberPart, 10) + 1;
   return `AGT-${nextNumber.toString().padStart(4, "0")}`;
 }
@@ -124,15 +124,15 @@ export async function POST(request: Request) {
     const carteElecteurFile = formData.get("carteElecteur");
     const carteAgentFile = formData.get("carteAgent");
 
-    const loginIdentifier = await generateLoginIdentifier();
+    const matricule = await generateLoginIdentifier(); // On garde la logique mais on l'appelle matricule
     const password = generatePassword();
-    const authEmail = buildAuthEmail(loginIdentifier);
+    const authEmail = buildAuthEmail(matricule);
 
     let carteElecteurPath: string | null = null;
     if (carteElecteurFile instanceof File && carteElecteurFile.size > 0) {
       carteElecteurPath = await uploadDocument(
         carteElecteurFile,
-        loginIdentifier,
+        matricule, // Use matricule for folder name
         "carte-electeur"
       );
     }
@@ -141,42 +141,62 @@ export async function POST(request: Request) {
     if (carteAgentFile instanceof File && carteAgentFile.size > 0) {
       carteAgentPath = await uploadDocument(
         carteAgentFile,
-        loginIdentifier,
+        matricule,
         "carte-agent"
       );
     }
 
-    const {
-      data: authData,
-      error: authError,
-    } = await supabaseAdmin.auth.admin.createUser({
-      email: authEmail,
-      email_confirm: true,
-      password,
-      user_metadata: {
-        role: "agent",
-        loginIdentifier,
-      },
-    });
+    // Vérifier si l'email existe déjà (cas de ré-exécution ou collision matricule)
+    const { data: existingUser } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .eq("email", authEmail)
+      .maybeSingle();
 
-    if (authError || !authData?.user) {
-      throw authError || new Error("Création du compte impossible.");
+    let userId = existingUser?.id;
+
+    if (!userId) {
+      const {
+        data: authData,
+        error: authError,
+      } = await supabaseAdmin.auth.admin.createUser({
+        email: authEmail,
+        email_confirm: true,
+        password,
+        user_metadata: {
+          role: "POLICE_OFFICER",
+          matricule,
+          full_name: `${prenom} ${nom}`,
+        },
+      });
+
+      if (authError) {
+        // Gestion spécifique email_exists qui aurait pu passer entre les mailles
+        if (authError.code === 'email_exists') {
+          return NextResponse.json(
+            { error: "Un compte avec ce matricule existe déjà. Veuillez contacter l'admin." },
+            { status: 409 }
+          );
+        }
+        throw authError;
+      }
+      if (!authData.user) throw new Error("Auth user creation failed");
+      userId = authData.user.id;
+    } else {
+      // User existait déjà, on met à jour le mot de passe pour le reset
+      await supabaseAdmin.auth.admin.updateUserById(userId, { password });
     }
 
-    const { error: insertError } = await supabaseAdmin.from("users").insert({
-      id: authData.user.id,
-      role: "agent",
-      login_identifier: loginIdentifier,
-      nom,
-      post_nom: postNom,
-      prenom,
-      statut_matrimonial: statutMatrimonial,
-      adresse,
-      telephone,
-      email: email || null,
-      carte_electeur_url: carteElecteurPath,
-      carte_agent_url: carteAgentPath,
-    });
+    // Upsert dans la table publique users pour s'assurer qu'il est bien sync
+    const { error: insertError } = await supabaseAdmin.from("users").upsert({
+      id: userId,
+      role: "POLICE_OFFICER",
+      matricule: matricule,
+      full_name: `${prenom} ${nom} ${postNom || ''}`.trim(),
+      phone: telephone,
+      email: email || null, // L'email de contact perso, pas l'auth
+      is_verified: true,
+    }, { onConflict: 'id' });
 
     if (insertError) {
       throw insertError;
@@ -184,7 +204,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      loginIdentifier,
+      loginIdentifier: matricule, // Keep legacy key in response for frontend compatibility
       password,
     });
   } catch (error) {

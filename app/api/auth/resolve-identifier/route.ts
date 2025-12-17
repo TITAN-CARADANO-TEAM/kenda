@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     const { data, error } = await supabaseAdmin
       .from("users")
       .select("role")
-      .eq("login_identifier", identifier)
+      .eq("matricule", identifier)
       .maybeSingle();
 
     if (error || !data) {
